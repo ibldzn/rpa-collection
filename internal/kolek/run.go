@@ -143,10 +143,10 @@ func processLoan(ctx context.Context, client *fincloud.Client, item LoanTarget, 
 		return result
 	}
 	result.OldKolekBI, result.OldKolekBPR, result.HasOld = inquiry.KolekBI, inquiry.KolekBPR, true
-	// if inquiry.KolekBI == target && inquiry.KolekBPR == target {
-	// 	result.Status, result.Reason = ProcessSkipped, fmt.Sprintf("collectability already %d", target)
-	// 	return result
-	// }
+	if inquiry.KolekBI == target && inquiry.KolekBPR == target {
+		result.Status, result.Reason = ProcessSkipped, fmt.Sprintf("collectability already %d", target)
+		return result
+	}
 	if err := client.SubmitManualKolek(ctx, *inquiry, target); err != nil {
 		result.Status, result.Err = ProcessFailed, err
 		return result
