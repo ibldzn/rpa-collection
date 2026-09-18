@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/ibldzn/fincloud-base/internal/fincloudapi"
+	"github.com/ibldzn/kolek-rpa/internal/fincloudapi"
 )
 
 func (c *Client) GetLoanAccountFromAltNumber(ctx context.Context, altNumber string) (string, error) {

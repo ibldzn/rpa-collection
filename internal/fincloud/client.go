@@ -3,13 +3,14 @@ package fincloud
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/ibldzn/fincloud-base/internal/fincloudapi"
+	"github.com/ibldzn/kolek-rpa/internal/fincloudapi"
 )
 
 const (
@@ -138,7 +139,7 @@ func (c *Client) doWithReauth(ctx context.Context, buildReq func() (*http.Reques
 	err = c.login(ctx)
 	c.reauthMu.Unlock()
 	if err != nil {
-		return nil, ErrUnableToReauth
+		return nil, fmt.Errorf("fincloud session expired and re-login failed: %w", err)
 	}
 
 	req, err = buildReq()

@@ -67,6 +67,9 @@ func (c *Client) login(ctx context.Context) error {
 		}
 		return ErrInvalidCredentials
 	}
+	if intermediate.Data.Result.SessionID == "" {
+		return ErrInvalidCredentials
+	}
 
 	c.setSessionID(intermediate.Data.Result.SessionID)
 

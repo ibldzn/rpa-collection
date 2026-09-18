@@ -7,7 +7,7 @@ var (
 	ErrInvalidCredentials = errors.New("invalid Fincloud credentials")
 	ErrNotLoggedIn        = errors.New("not logged in to Fincloud")
 	ErrDataFetchFailed    = errors.New("failed to fetch data from Fincloud")
-	ErrUnableToReauth     = errors.New("unable to re-authenticate with Fincloud")
+	ErrUnableToReauth     = errors.New("fincloud unauthorized after re-login")
 	ErrDataNotFound       = errors.New("data not found")
 	ErrMissingAPIClient   = errors.New("missing Fincloud API client")
 )
