@@ -44,7 +44,7 @@ type Config struct {
 	HTTPClient       *http.Client
 }
 
-func Run(ctx context.Context, target int, inputs []string, config Config) []ProcessResult {
+func Run(ctx context.Context, target int, changeType string, inputs []string, config Config) []ProcessResult {
 	var results []ProcessResult
 	var targets []LoanTarget
 	var alternates []LoanTarget
@@ -123,7 +123,7 @@ func Run(ctx context.Context, target int, inputs []string, config Config) []Proc
 			continue
 		}
 		for _, item := range groups[branch] {
-			results = append(results, processLoan(ctx, client, item, target))
+			results = append(results, processLoan(ctx, client, item, target, changeType))
 		}
 	}
 	return results
@@ -135,7 +135,7 @@ func newClient(config Config, location string) (*fincloud.Client, error) {
 	return fincloud.NewClient(credentials, fincloud.WithBaseURL(config.BaseURL), fincloud.WithHTTPClient(config.HTTPClient))
 }
 
-func processLoan(ctx context.Context, client *fincloud.Client, item LoanTarget, target int) ProcessResult {
+func processLoan(ctx context.Context, client *fincloud.Client, item LoanTarget, target int, changeType string) ProcessResult {
 	result := ProcessResult{LoanTarget: item, NewKolek: target}
 	inquiry, err := client.InquiryManualKolek(ctx, item.PrimaryAccount)
 	if err != nil {
@@ -143,11 +143,13 @@ func processLoan(ctx context.Context, client *fincloud.Client, item LoanTarget, 
 		return result
 	}
 	result.OldKolekBI, result.OldKolekBPR, result.HasOld = inquiry.KolekBI, inquiry.KolekBPR, true
-	if inquiry.KolekBI == target && inquiry.KolekBPR == target {
-		result.Status, result.Reason = ProcessSkipped, fmt.Sprintf("collectability already %d", target)
+	if inquiry.KolekBI == target && inquiry.KolekBPR == target &&
+		strings.EqualFold(strings.TrimSpace(inquiry.UpdateKolekBI), changeType) &&
+		strings.EqualFold(strings.TrimSpace(inquiry.UpdateKolekBPR), changeType) {
+		result.Status, result.Reason = ProcessSkipped, fmt.Sprintf("collectability and change type already %d/%s", target, changeType)
 		return result
 	}
-	if err := client.SubmitManualKolek(ctx, *inquiry, target); err != nil {
+	if err := client.SubmitManualKolek(ctx, *inquiry, target, changeType); err != nil {
 		result.Status, result.Err = ProcessFailed, err
 		return result
 	}

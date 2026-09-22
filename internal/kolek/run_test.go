@@ -103,10 +103,18 @@ func TestRunResolvesGroupsAndSubmits(t *testing.T) {
 				account = "wrong-account"
 			}
 			bi, bpr := 5, 2
-			if strings.HasSuffix(account, "0002") {
+			updateBI, updateBPR := "Automatic", "Manual"
+			switch {
+			case strings.HasSuffix(account, "0002"):
 				bi, bpr = 1, 1
+				updateBI, updateBPR = "manual", "MANUAL"
+			case strings.HasSuffix(account, "0005"):
+				bi, bpr = 1, 1
+			case strings.HasSuffix(account, "0006"):
+				bi, bpr = 1, 1
+				updateBI = ""
 			}
-			fmt.Fprintf(w, `{"status":"ok","data":{"result":{"norekening":%q,"namanasabah":"Ratna Juwita","nopk":"PL001000073837","appdate":{"date":"2026-08-27 00:00:00.000000"},"datarekening":{"kolekbimanual":0,"kolekbprmanual":1,"kolekbiauto":3,"kolekbprauto":4,"kolekbi":%d,"kolekbpr":%d,"dpd":4423,"totalassetvalue":0,"totalcollateralvalue":0}}}}`, account, bi, bpr)
+			fmt.Fprintf(w, `{"status":"ok","data":{"result":{"norekening":%q,"namanasabah":"Ratna Juwita","nopk":"PL001000073837","appdate":{"date":"2026-08-27 00:00:00.000000"},"datarekening":{"kolekbimanual":0,"kolekbprmanual":1,"kolekbiauto":3,"kolekbprauto":4,"kolekbi":%d,"kolekbpr":%d,"updatekolekbi":%q,"updatekolekbpr":%q,"dpd":4423,"totalassetvalue":0,"totalcollateralvalue":0}}}}`, account, bi, bpr, updateBI, updateBPR)
 		case "/pinjaman/updateManualKolek/pembuatan/pinjaman":
 			if got := r.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
 				t.Errorf("Content-Type = %q", got)
@@ -142,10 +150,11 @@ func TestRunResolvesGroupsAndSubmits(t *testing.T) {
 	}
 	inputs := []string{
 		"3000020000000001", " 0130101394 ", "3000010000000002",
+		"3000010000000005", "3000010000000006",
 		"3000020000000003", "3000020000000004", "3000070000000010",
 		"3000070000000011", "123", "0230109999",
 	}
-	results := Run(context.Background(), 1, inputs, config)
+	results := Run(context.Background(), 1, "Manual", inputs, config)
 	if len(results) != len(inputs) {
 		t.Fatalf("results = %d, want %d", len(results), len(inputs))
 	}
@@ -157,6 +166,8 @@ func TestRunResolvesGroupsAndSubmits(t *testing.T) {
 		"3000020000000001": ProcessSuccess,
 		"0130101394":       ProcessSuccess,
 		"3000010000000002": ProcessSkipped,
+		"3000010000000005": ProcessSuccess,
+		"3000010000000006": ProcessFailed,
 		"3000020000000003": ProcessFailed,
 		"3000020000000004": ProcessFailed,
 		"3000070000000010": ProcessFailed,
@@ -191,12 +202,16 @@ func TestRunResolvesGroupsAndSubmits(t *testing.T) {
 		t.Errorf("alternate lookups = %v", lookupAccounts)
 	}
 	if !reflect.DeepEqual(inquiryAccounts, []string{
-		"3000010000000010", "3000010000000002", "3000020000000001", "3000020000000003", "3000020000000004",
+		"3000010000000010", "3000010000000002", "3000010000000005", "3000010000000006",
+		"3000020000000001", "3000020000000003", "3000020000000004",
 	}) {
 		t.Errorf("inquiry order = %v", inquiryAccounts)
 	}
-	if len(updates) != 2 {
-		t.Fatalf("updates = %d, want 2", len(updates))
+	if len(updates) != 3 {
+		t.Fatalf("updates = %d, want 3", len(updates))
+	}
+	if _, ok := updates["3000010000000005"]; !ok {
+		t.Error("change type difference with same collectability did not submit update")
 	}
 	form := updates["3000010000000010"]
 	for key, want := range map[string]string{
@@ -218,6 +233,45 @@ func TestRunResolvesGroupsAndSubmits(t *testing.T) {
 	} {
 		if got := form.Get(key); got != want {
 			t.Errorf("form %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestAutomaticChangeTypeUpdatesMatchingCollectability(t *testing.T) {
+	const account = "3000010000000010"
+	var form url.Values
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		switch request.URL.Path {
+		case "/pinjaman/updateManualKolek/pembuatan/cari":
+			fmt.Fprintf(recorder, `{"status":"ok","data":{"result":{"norekening":%q,"namanasabah":"Ratna Juwita","nopk":"PL001000073837","appdate":{"date":"2026-08-27 00:00:00.000000"},"datarekening":{"kolekbi":1,"kolekbpr":1,"updatekolekbi":"Manual","updatekolekbpr":"Manual","dpd":4423,"totalassetvalue":0,"totalcollateralvalue":0}}}}`, account)
+		case "/pinjaman/updateManualKolek/pembuatan/pinjaman":
+			if err := request.ParseForm(); err != nil {
+				t.Error(err)
+			}
+			form = request.Form
+			fmt.Fprint(recorder, `{"status":"ok"}`)
+		default:
+			t.Errorf("unexpected endpoint %s", request.URL.Path)
+			recorder.WriteHeader(http.StatusNotFound)
+		}
+		return recorder.Result(), nil
+	})
+	client, err := newClient(Config{
+		BaseURL:     "http://fincloud.test",
+		Credentials: fincloud.Credentials{Username: "user", Password: "password"},
+		HTTPClient:  &http.Client{Transport: transport},
+	}, "001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := processLoan(context.Background(), client, LoanTarget{PrimaryAccount: account}, 1, "Automatic")
+	if result.Status != ProcessSuccess || result.Err != nil {
+		t.Fatalf("result = %+v, want SUCCESS", result)
+	}
+	for _, key := range []string{"jenisperubahan_kolekbi", "jenisperubahan_kolekbpr"} {
+		if got := form.Get(key); got != "Automatic" {
+			t.Errorf("%s = %q, want Automatic", key, got)
 		}
 	}
 }

@@ -23,6 +23,8 @@ type ManualKolekInquiry struct {
 	TransactionDate string
 	KolekBI         int
 	KolekBPR        int
+	UpdateKolekBI   string
+	UpdateKolekBPR  string
 	DPD             int
 	AssetValue      json.Number
 	CollateralValue json.Number
@@ -60,6 +62,8 @@ func (c *Client) InquiryManualKolek(ctx context.Context, account string) (*Manua
 				Loan struct {
 					KolekBI         *int        `json:"kolekbi"`
 					KolekBPR        *int        `json:"kolekbpr"`
+					UpdateKolekBI   string      `json:"updatekolekbi"`
+					UpdateKolekBPR  string      `json:"updatekolekbpr"`
 					DPD             *int        `json:"dpd"`
 					AssetValue      json.Number `json:"totalassetvalue"`
 					CollateralValue json.Number `json:"totalcollateralvalue"`
@@ -79,6 +83,7 @@ func (c *Client) InquiryManualKolek(ctx context.Context, account string) (*Manua
 	}
 	if result.CustomerName == "" || result.AgreementNumber == "" || result.Loan.KolekBI == nil ||
 		result.Loan.KolekBPR == nil || result.Loan.DPD == nil ||
+		strings.TrimSpace(result.Loan.UpdateKolekBI) == "" || strings.TrimSpace(result.Loan.UpdateKolekBPR) == "" ||
 		result.Loan.AssetValue == "" || result.Loan.CollateralValue == "" {
 		return nil, fmt.Errorf("manual kolek inquiry %s: missing required fields", account)
 	}
@@ -93,13 +98,15 @@ func (c *Client) InquiryManualKolek(ctx context.Context, account string) (*Manua
 		TransactionDate: fmt.Sprintf("%d-%d-%d", date.Year(), date.Month(), date.Day()),
 		KolekBI:         *result.Loan.KolekBI,
 		KolekBPR:        *result.Loan.KolekBPR,
+		UpdateKolekBI:   result.Loan.UpdateKolekBI,
+		UpdateKolekBPR:  result.Loan.UpdateKolekBPR,
 		DPD:             *result.Loan.DPD,
 		AssetValue:      result.Loan.AssetValue,
 		CollateralValue: result.Loan.CollateralValue,
 	}, nil
 }
 
-func (c *Client) SubmitManualKolek(ctx context.Context, inquiry ManualKolekInquiry, target int) error {
+func (c *Client) SubmitManualKolek(ctx context.Context, inquiry ManualKolekInquiry, target int, changeType string) error {
 	form := url.Values{
 		"jenistransaksi":          {"Update Manual Kolektibilitas BI & Internal"},
 		"norekening":              {inquiry.AccountNumber},
@@ -113,8 +120,8 @@ func (c *Client) SubmitManualKolek(ctx context.Context, inquiry ManualKolekInqui
 		"nilai_kolekbprlama":      {strconv.Itoa(inquiry.KolekBPR)},
 		"nilai_kolekbi":           {strconv.Itoa(target)},
 		"nilai_kolekbpr":          {strconv.Itoa(target)},
-		"jenisperubahan_kolekbi":  {"Automatic"},
-		"jenisperubahan_kolekbpr": {"Automatic"},
+		"jenisperubahan_kolekbi":  {changeType},
+		"jenisperubahan_kolekbpr": {changeType},
 		"status_dokumen":          {"Diajukan"},
 	}
 	encoded := form.Encode()

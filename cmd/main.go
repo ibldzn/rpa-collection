@@ -17,8 +17,18 @@ func main() {
 }
 
 func run(args []string, output, errors io.Writer) int {
-	if len(args) < 2 || len(args[0]) != 1 || args[0][0] < '1' || args[0][0] > '5' {
-		fmt.Fprintln(errors, "usage: app <kolek: 1-5> <loan-account> [loan-account...]")
+	if len(args) < 3 || len(args[0]) != 1 || args[0][0] < '1' || args[0][0] > '5' {
+		fmt.Fprintln(errors, "usage: app <kolek: 1-5> <Manual|Automatic> <loan-account> [loan-account...]")
+		return 2
+	}
+	var changeType string
+	switch {
+	case strings.EqualFold(strings.TrimSpace(args[1]), "Manual"):
+		changeType = "Manual"
+	case strings.EqualFold(strings.TrimSpace(args[1]), "Automatic"):
+		changeType = "Automatic"
+	default:
+		fmt.Fprintln(errors, "change type must be Manual or Automatic")
 		return 2
 	}
 	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
@@ -31,7 +41,7 @@ func run(args []string, output, errors io.Writer) int {
 		return 2
 	}
 	target := int(args[0][0] - '0')
-	results := kolek.Run(context.Background(), target, args[1:], config)
+	results := kolek.Run(context.Background(), target, changeType, args[2:], config)
 	var success, skipped, failed int
 	for _, result := range results {
 		branch := result.BranchCode
@@ -48,7 +58,7 @@ func run(args []string, output, errors io.Writer) int {
 		} else {
 			fmt.Fprintf(output, " | target %d", target)
 		}
-		fmt.Fprintf(output, " | %s", result.Status)
+		fmt.Fprintf(output, " | change %s | %s", changeType, result.Status)
 		if result.Err != nil {
 			fmt.Fprintf(output, ": %v", result.Err)
 		} else if result.Reason != "" {
