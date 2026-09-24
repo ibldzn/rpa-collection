@@ -3,10 +3,10 @@ package fincloud
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -17,8 +17,6 @@ const (
 	autodebitRemovalInquiryPath = "/pinjaman/pendaftaranPenghapusanAutodebit/pembuatan/cari"
 	autodebitRemovalSubmitPath  = "/pinjaman/pendaftaranPenghapusanAutodebit/pembuatan/pinjaman"
 )
-
-var operAccountPattern = regexp.MustCompile(`^[0-9]{3}000OPER$`)
 
 type fincloudDate struct {
 	Date string `json:"date"`
@@ -95,34 +93,39 @@ type autodebitRemovalLoan struct {
 	LoanDisbursementSavingAccount string        `json:"norektab_pencairanpinjaman"`
 }
 
-// RegisterAutodebitRemoval registers a loan to remove autodebit using the
-// caller-selected OPER account.
-func (c *Client) RegisterAutodebitRemoval(ctx context.Context, loanAccount, operAccount string) error {
+// SetLoanRepaymentAccount sets the loan repayment account to an active saving account.
+func (c *Client) SetLoanRepaymentAccount(ctx context.Context, loanAccount, savingAccount string) error {
+	_, err := c.SetLoanRepaymentAccountDetails(ctx, loanAccount, savingAccount)
+	return err
+}
+
+// SetLoanRepaymentAccountDetails returns the verified saving account used in the mutation.
+func (c *Client) SetLoanRepaymentAccountDetails(ctx context.Context, loanAccount, savingAccount string) (*fincloudapi.SavingBalanceInquiryResponse, error) {
 	loanAccount = strings.TrimSpace(loanAccount)
-	operAccount = strings.TrimSpace(operAccount)
+	savingAccount = strings.TrimSpace(savingAccount)
 	if loanAccount == "" {
-		return fmt.Errorf("loan account is required")
+		return nil, fmt.Errorf("loan account is required")
 	}
-	if operAccount == "" {
-		return fmt.Errorf("OPER account is required")
-	}
-	if !operAccountPattern.MatchString(operAccount) {
-		return fmt.Errorf("invalid OPER account %q", operAccount)
+	if savingAccount == "" {
+		return nil, fmt.Errorf("saving account is required")
 	}
 
 	loan, err := c.inquiryAutodebitRemovalLoan(ctx, loanAccount)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	oper, err := c.inquiryOPERAccount(ctx, operAccount)
+	saving, err := c.inquirySavingAccount(ctx, savingAccount)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	form, err := buildAutodebitRemovalForm(*loan, operAccount, *oper)
+	form, err := buildAutodebitRemovalForm(*loan, savingAccount, *saving)
 	if err != nil {
-		return fmt.Errorf("build autodebit removal form: %w", err)
+		return nil, fmt.Errorf("build repayment account form: %w", err)
 	}
-	return c.submitAutodebitRemoval(ctx, loan.AccountNumber, form)
+	if err := c.submitAutodebitRemoval(ctx, loan.AccountNumber, form); err != nil {
+		return nil, err
+	}
+	return saving, nil
 }
 
 func (c *Client) inquiryAutodebitRemovalLoan(ctx context.Context, account string) (*autodebitRemovalLoan, error) {
@@ -157,7 +160,7 @@ func (c *Client) inquiryAutodebitRemovalLoan(ctx context.Context, account string
 		return nil, fmt.Errorf("autodebit removal loan inquiry %s: status %q", account, body.Status)
 	}
 	if body.Data.Result == nil {
-		return nil, fmt.Errorf("autodebit removal loan inquiry %s: missing result", account)
+		return nil, fmt.Errorf("autodebit removal loan inquiry %s: missing result: %w", account, ErrDataNotFound)
 	}
 	if body.Data.Result.AccountNumber != account {
 		return nil, fmt.Errorf("autodebit removal loan inquiry %s: returned account %q", account, body.Data.Result.AccountNumber)
@@ -165,31 +168,35 @@ func (c *Client) inquiryAutodebitRemovalLoan(ctx context.Context, account string
 	return body.Data.Result, nil
 }
 
-func (c *Client) inquiryOPERAccount(ctx context.Context, account string) (*fincloudapi.SavingBalanceInquiryResponse, error) {
+func (c *Client) inquirySavingAccount(ctx context.Context, account string) (*fincloudapi.SavingBalanceInquiryResponse, error) {
 	if c.api == nil {
-		return nil, fmt.Errorf("OPER account inquiry %s: %w", account, ErrMissingAPIClient)
+		return nil, fmt.Errorf("saving account inquiry %s: %w", account, ErrMissingAPIClient)
 	}
-	oper, err := c.api.InquirySavingBalance(ctx, account)
+	saving, err := c.api.InquirySavingBalance(ctx, account)
 	if err != nil {
-		return nil, fmt.Errorf("OPER account inquiry %s: %w", account, err)
+		var apiErr *fincloudapi.APIError
+		if errors.As(err, &apiErr) && (strings.Contains(strings.ToLower(apiErr.Description), "not found") || strings.Contains(strings.ToLower(apiErr.Description), "tidak ditemukan")) {
+			return nil, fmt.Errorf("saving account inquiry %s: %w", account, ErrDataNotFound)
+		}
+		return nil, fmt.Errorf("saving account inquiry %s: %w", account, err)
 	}
-	if oper == nil || oper.AccountNumber != account {
-		return nil, fmt.Errorf("OPER account inquiry %s: returned account %q", account, operAccountNumber(oper))
+	if saving == nil || saving.AccountNumber != account {
+		got := ""
+		if saving != nil {
+			got = saving.AccountNumber
+		}
+		return nil, fmt.Errorf("saving account inquiry %s: returned account %q: %w", account, got, ErrInvalidSavingAccount)
 	}
-	if strings.TrimSpace(oper.CustomerName) == "" || strings.TrimSpace(oper.DocumentStatus) == "" || strings.TrimSpace(oper.Currency) == "" {
-		return nil, fmt.Errorf("OPER account inquiry %s: missing required fields", account)
+	if strings.TrimSpace(saving.CustomerName) == "" || strings.TrimSpace(saving.DocumentStatus) == "" || strings.TrimSpace(saving.Currency) == "" {
+		return nil, fmt.Errorf("saving account inquiry %s: missing required fields: %w", account, ErrInvalidSavingAccount)
 	}
-	return oper, nil
+	if !strings.EqualFold(strings.TrimSpace(saving.DocumentStatus), "Active") {
+		return nil, fmt.Errorf("saving account %s has status %q: %w", account, saving.DocumentStatus, ErrInactiveSavingAccount)
+	}
+	return saving, nil
 }
 
-func operAccountNumber(oper *fincloudapi.SavingBalanceInquiryResponse) string {
-	if oper == nil {
-		return ""
-	}
-	return oper.AccountNumber
-}
-
-func buildAutodebitRemovalForm(loan autodebitRemovalLoan, operAccount string, oper fincloudapi.SavingBalanceInquiryResponse) (url.Values, error) {
+func buildAutodebitRemovalForm(loan autodebitRemovalLoan, savingAccount string, saving fincloudapi.SavingBalanceInquiryResponse) (url.Values, error) {
 	form := url.Values{}
 	for key, value := range map[string]string{
 		"lokasi":                     loan.Location,
@@ -283,10 +290,10 @@ func buildAutodebitRemovalForm(loan autodebitRemovalLoan, operAccount string, op
 	}
 
 	form.Set("status_dokumen", "Diajukan")
-	form.Set("norektab_bayarangsuran", operAccount)
-	form.Set("tabbayar_namapemilik", oper.CustomerName)
-	form.Set("tabbayar_status", oper.DocumentStatus)
-	form.Set("tabbayar_currency", oper.Currency)
+	form.Set("norektab_bayarangsuran", savingAccount)
+	form.Set("tabbayar_namapemilik", saving.CustomerName)
+	form.Set("tabbayar_status", saving.DocumentStatus)
+	form.Set("tabbayar_currency", saving.Currency)
 	return form, nil
 }
 

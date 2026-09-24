@@ -51,23 +51,16 @@ func Run(ctx context.Context, target int, changeType string, inputs []string, co
 
 	// Check every input before the first network request.
 	for index, input := range inputs {
-		account := strings.TrimSpace(input)
-		item := LoanTarget{InputAccount: input, inputIndex: index}
-		if !digits(account) {
-			results = append(results, failed(item, target, errors.New("account must contain only digits")))
-			continue
-		}
-		if len(account) == 10 {
-			alternates = append(alternates, item)
-			continue
-		}
-		item.PrimaryAccount = account
-		branch, err := branchFromPrimary(account)
+		item, alternate, err := loanInput(input)
+		item.inputIndex = index
 		if err != nil {
 			results = append(results, failed(item, target, err))
 			continue
 		}
-		item.BranchCode = branch
+		if alternate {
+			alternates = append(alternates, item)
+			continue
+		}
 		targets = append(targets, item)
 	}
 
@@ -90,18 +83,11 @@ func Run(ctx context.Context, target int, changeType string, inputs []string, co
 				results = append(results, failed(item, target, fmt.Errorf("alternate lookup login: %w", err)))
 				continue
 			}
-			primary, lookupErr := resolver.GetLoanAccountFromAltNumber(ctx, strings.TrimSpace(item.InputAccount))
-			if lookupErr != nil {
-				results = append(results, failed(item, target, fmt.Errorf("alternate lookup: %w", lookupErr)))
+			item, err = resolveAlternate(ctx, item, resolver)
+			if err != nil {
+				results = append(results, failed(item, target, err))
 				continue
 			}
-			item.PrimaryAccount = strings.TrimSpace(primary)
-			branch, branchErr := branchFromPrimary(item.PrimaryAccount)
-			if branchErr != nil {
-				results = append(results, failed(item, target, fmt.Errorf("resolved account: %w", branchErr)))
-				continue
-			}
-			item.BranchCode = branch
 			targets = append(targets, item)
 		}
 	}
@@ -178,6 +164,55 @@ func branchFromPrimary(account string) (string, error) {
 		return "", fmt.Errorf("invalid primary loan account %q", account)
 	}
 	return account[3:6], nil
+}
+
+// ResolveLoanAccount accepts a primary loan account or a ten-digit alternate.
+func ResolveLoanAccount(ctx context.Context, input string, config Config) (LoanTarget, error) {
+	item, alternate, err := loanInput(input)
+	if err != nil || !alternate {
+		return item, err
+	}
+	if config.LookupLocationID == "" {
+		return item, errors.New("FINCLOUD_LOOKUP_LOCATION_ID is required for alternate accounts")
+	}
+	client, err := newClient(config, config.LookupLocationID)
+	if err != nil {
+		return item, err
+	}
+	if err := client.Login(ctx); err != nil {
+		return item, fmt.Errorf("alternate lookup login: %w", err)
+	}
+	return resolveAlternate(ctx, item, client)
+}
+
+func loanInput(input string) (LoanTarget, bool, error) {
+	account := strings.TrimSpace(input)
+	item := LoanTarget{InputAccount: input}
+	if !digits(account) {
+		return item, false, errors.New("account must contain only digits")
+	}
+	if len(account) == 10 {
+		return item, true, nil
+	}
+	branch, err := branchFromPrimary(account)
+	if err != nil {
+		return item, false, err
+	}
+	item.PrimaryAccount, item.BranchCode = account, branch
+	return item, false, nil
+}
+
+func resolveAlternate(ctx context.Context, item LoanTarget, client *fincloud.Client) (LoanTarget, error) {
+	primary, err := client.GetLoanAccountFromAltNumber(ctx, strings.TrimSpace(item.InputAccount))
+	if err != nil {
+		return item, fmt.Errorf("alternate lookup: %w", err)
+	}
+	item.PrimaryAccount = strings.TrimSpace(primary)
+	item.BranchCode, err = branchFromPrimary(item.PrimaryAccount)
+	if err != nil {
+		return item, fmt.Errorf("resolved account: %w", err)
+	}
+	return item, nil
 }
 
 func groupByBranch(targets []LoanTarget) ([]string, map[string][]LoanTarget) {

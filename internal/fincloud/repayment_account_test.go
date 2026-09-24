@@ -3,6 +3,7 @@ package fincloud
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -90,7 +91,7 @@ const autodebitRemovalLoanResponse = `{
   }}
 }`
 
-func TestRegisterAutodebitRemovalBuildsAndSubmitsForm(t *testing.T) {
+func TestSetLoanRepaymentAccountBuildsAndSubmitsForm(t *testing.T) {
 	var order []string
 	var encoded string
 	webTransport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -120,18 +121,18 @@ func TestRegisterAutodebitRemovalBuildsAndSubmitsForm(t *testing.T) {
 		}
 	})
 	apiTransport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		order = append(order, "oper")
+		order = append(order, "saving")
 		if req.URL.Path != "/saving/inq/balance" || req.URL.Query().Get("accountNumber") != "001000OPER" {
-			t.Errorf("OPER inquiry = %s", req.URL.String())
+			t.Errorf("saving inquiry = %s", req.URL.String())
 		}
 		return textResponse(req, http.StatusOK, `{"responseCode":"00","description":"SUCCESS","data":{"accountNumber":"001000OPER","customerName":"Internal Account 001 (Kantor Pusat Operasional)","documentStatus":"Aktif","currency":"IDR"}}`), nil
 	})
 	client := newAutodebitRemovalTestClient(t, webTransport, apiTransport)
 
-	if err := client.RegisterAutodebitRemoval(context.Background(), "3000010000000011", "001000OPER"); err != nil {
+	if err := client.SetLoanRepaymentAccount(context.Background(), "3000010000000011", "001000OPER"); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(order, []string{"loan", "oper", "submit"}) {
+	if !reflect.DeepEqual(order, []string{"loan", "saving", "submit"}) {
 		t.Fatalf("request order = %v", order)
 	}
 	form, err := url.ParseQuery(encoded)
@@ -184,7 +185,7 @@ func TestRegisterAutodebitRemovalBuildsAndSubmitsForm(t *testing.T) {
 	}
 }
 
-func TestBuildAutodebitRemovalFormUsesSuppliedOPER(t *testing.T) {
+func TestBuildAutodebitRemovalFormUsesSuppliedSaving(t *testing.T) {
 	response := strings.Replace(autodebitRemovalLoanResponse, `"norektab_bayarangsuran":null`, `"norektab_bayarangsuran":"999999OPER - old"`, 1)
 	if !strings.Contains(response, "999999OPER") {
 		t.Fatal("stale repayment account was not added to the fixture")
@@ -197,16 +198,16 @@ func TestBuildAutodebitRemovalFormUsesSuppliedOPER(t *testing.T) {
 	if err := json.Unmarshal([]byte(response), &body); err != nil {
 		t.Fatal(err)
 	}
-	form, err := buildAutodebitRemovalForm(body.Data.Result, "002000OPER", fincloudapi.SavingBalanceInquiryResponse{
-		AccountNumber:  "002000OPER",
-		CustomerName:   "Internal Account 002 (Branch Office)",
+	form, err := buildAutodebitRemovalForm(body.Data.Result, "002123456789", fincloudapi.SavingBalanceInquiryResponse{
+		AccountNumber:  "002123456789",
+		CustomerName:   "Branch Office Customer",
 		DocumentStatus: "Aktif",
 		Currency:       "IDR",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := form.Get("norektab_bayarangsuran"); got != "002000OPER" {
+	if got := form.Get("norektab_bayarangsuran"); got != "002123456789" {
 		t.Fatalf("repayment account = %q", got)
 	}
 	if strings.Contains(form.Encode(), "999999OPER") {
@@ -214,23 +215,22 @@ func TestBuildAutodebitRemovalFormUsesSuppliedOPER(t *testing.T) {
 	}
 }
 
-func TestRegisterAutodebitRemovalValidatesInputs(t *testing.T) {
+func TestSetLoanRepaymentAccountValidatesInputs(t *testing.T) {
 	for _, test := range []struct {
-		name, loan, oper string
+		name, loan, saving string
 	}{
-		{name: "empty loan", oper: "001000OPER"},
-		{name: "empty OPER", loan: "3000010000000011"},
-		{name: "invalid OPER", loan: "3000010000000011", oper: "001001OPER"},
+		{name: "empty loan", saving: "001000OPER"},
+		{name: "empty saving", loan: "3000010000000011"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := (&Client{}).RegisterAutodebitRemoval(context.Background(), test.loan, test.oper); err == nil {
+			if err := (&Client{}).SetLoanRepaymentAccount(context.Background(), test.loan, test.saving); err == nil {
 				t.Fatal("expected validation error")
 			}
 		})
 	}
 }
 
-func TestRegisterAutodebitRemovalStopsOnLoanError(t *testing.T) {
+func TestSetLoanRepaymentAccountStopsOnLoanError(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		statusCode int
@@ -249,20 +249,20 @@ func TestRegisterAutodebitRemovalStopsOnLoanError(t *testing.T) {
 				}),
 				roundTripFunc(func(req *http.Request) (*http.Response, error) {
 					apiCalls++
-					return nil, fmt.Errorf("unexpected OPER inquiry")
+					return nil, fmt.Errorf("unexpected saving inquiry")
 				}),
 			)
-			if err := client.RegisterAutodebitRemoval(context.Background(), "3000010000000011", "001000OPER"); err == nil || !strings.Contains(err.Error(), test.want) {
+			if err := client.SetLoanRepaymentAccount(context.Background(), "3000010000000011", "001000OPER"); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v", err)
 			}
 			if apiCalls != 0 {
-				t.Fatalf("OPER inquiries = %d", apiCalls)
+				t.Fatalf("saving inquiries = %d", apiCalls)
 			}
 		})
 	}
 }
 
-func TestRegisterAutodebitRemovalStopsOnOPERError(t *testing.T) {
+func TestSetLoanRepaymentAccountStopsOnSavingError(t *testing.T) {
 	var submits int
 	client := newAutodebitRemovalTestClient(t,
 		roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -275,7 +275,7 @@ func TestRegisterAutodebitRemovalStopsOnOPERError(t *testing.T) {
 			return textResponse(req, http.StatusOK, `{"responseCode":"99","description":"not found"}`), nil
 		}),
 	)
-	if err := client.RegisterAutodebitRemoval(context.Background(), "3000010000000011", "001000OPER"); err == nil || !strings.Contains(err.Error(), "API error") {
+	if err := client.SetLoanRepaymentAccount(context.Background(), "3000010000000011", "001000OPER"); !errors.Is(err, ErrDataNotFound) {
 		t.Fatalf("error = %v", err)
 	}
 	if submits != 0 {
@@ -283,7 +283,72 @@ func TestRegisterAutodebitRemovalStopsOnOPERError(t *testing.T) {
 	}
 }
 
-func TestRegisterAutodebitRemovalPropagatesSubmitError(t *testing.T) {
+func TestSetLoanRepaymentAccountValidatesSavingInquiryBeforeSubmit(t *testing.T) {
+	for _, test := range []struct {
+		name, account, customer, status, currency string
+		wantErr                                   error
+	}{
+		{"normal saving", "001123456789", "Sariman", "Aktif", "IDR", nil},
+		{"cross branch saving", "002123456789", "Sariman", " aktif ", "IDR", nil},
+		{"mismatched account", "009999999999", "Sariman", "Aktif", "IDR", ErrInvalidSavingAccount},
+		{"missing customer", "001123456789", "", "Aktif", "IDR", ErrInvalidSavingAccount},
+		{"missing status", "001123456789", "Sariman", "", "IDR", ErrInvalidSavingAccount},
+		{"missing currency", "001123456789", "Sariman", "Aktif", "", ErrInvalidSavingAccount},
+		{"inactive", "001123456789", "Sariman", "Tutup", "IDR", ErrInactiveSavingAccount},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var submits int
+			web := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path == autodebitRemovalSubmitPath {
+					submits++
+					if err := req.ParseForm(); err != nil {
+						t.Fatal(err)
+					}
+					for key, want := range map[string]string{
+						"norektab_bayarangsuran": "001123456789",
+						"tabbayar_namapemilik":   "Sariman",
+						"tabbayar_status":        test.status,
+						"tabbayar_currency":      "IDR",
+					} {
+						if key == "norektab_bayarangsuran" && test.name == "cross branch saving" {
+							want = "002123456789"
+						}
+						if got := req.Form.Get(key); got != want {
+							t.Errorf("%s = %q, want %q", key, got, want)
+						}
+					}
+					return textResponse(req, http.StatusOK, `{"status":"ok"}`), nil
+				}
+				return textResponse(req, http.StatusOK, autodebitRemovalLoanResponse), nil
+			})
+			api := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if got := req.URL.Query().Get("accountNumber"); got != "001123456789" && got != "002123456789" {
+					t.Errorf("requested saving = %q", got)
+				}
+				body := fmt.Sprintf(`{"responseCode":"00","data":{"accountNumber":%q,"customerName":%q,"documentStatus":%q,"currency":%q}}`, test.account, test.customer, test.status, test.currency)
+				return textResponse(req, http.StatusOK, body), nil
+			})
+			client := newAutodebitRemovalTestClient(t, web, api)
+			requested := "001123456789"
+			if test.name == "cross branch saving" {
+				requested = "002123456789"
+			}
+			err := client.SetLoanRepaymentAccount(context.Background(), "3000010000000011", requested)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("error = %v, want %v", err, test.wantErr)
+			}
+			wantSubmits := 1
+			if test.wantErr != nil {
+				wantSubmits = 0
+			}
+			if submits != wantSubmits {
+				t.Fatalf("submits = %d, want %d", submits, wantSubmits)
+			}
+		})
+	}
+}
+
+func TestSetLoanRepaymentAccountPropagatesSubmitError(t *testing.T) {
 	client := newAutodebitRemovalTestClient(t,
 		roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.URL.Path == autodebitRemovalSubmitPath {
@@ -295,7 +360,7 @@ func TestRegisterAutodebitRemovalPropagatesSubmitError(t *testing.T) {
 			return textResponse(req, http.StatusOK, `{"responseCode":"00","description":"SUCCESS","data":{"accountNumber":"001000OPER","customerName":"Internal Account","documentStatus":"Aktif","currency":"IDR"}}`), nil
 		}),
 	)
-	if err := client.RegisterAutodebitRemoval(context.Background(), "3000010000000011", "001000OPER"); err == nil || !strings.Contains(err.Error(), `status "error"`) {
+	if err := client.SetLoanRepaymentAccount(context.Background(), "3000010000000011", "001000OPER"); err == nil || !strings.Contains(err.Error(), `status "error"`) {
 		t.Fatalf("error = %v", err)
 	}
 }
